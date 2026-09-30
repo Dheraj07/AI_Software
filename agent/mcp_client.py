@@ -137,7 +137,10 @@ class MCPClient:
             "execution",
             PROJECT_ROOT / "mcp_server" / "execution_server.py"
         )
-
+        await self.connect_server(
+        "git",
+        PROJECT_ROOT / "mcp_server" / "git_server.py"
+        )
         await self.list_tools()
 
     async def list_tools(self):

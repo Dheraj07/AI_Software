@@ -454,27 +454,14 @@ async def main():
     # --------------------------------------------------------
 
     task = """
-Inspect calculator/utils.py and make sure it is correct.
+    
+Check the current Git repository status.
 
-Requirements:
-
-1. Inspect the complete file.
-2. Fix any obvious bugs in the existing functions.
-3. Add this function if it does not already exist:
-
-def divide(a, b):
-    if b == 0:
-        raise ValueError("Cannot divide by zero")
-    return a / b
-
-4. Preserve all existing functionality.
-5. Run the project's test suite using the run_tests tool.
-6. If tests fail:
-   - inspect the failure
-   - fix the relevant code
-   - run the tests again
-7. Do not finish until the test suite passes.
-8. Finally, read the modified file and summarize the changes.
+Use the git_status tool and report:
+1. Current branch
+2. Modified files
+3. Untracked files
+4. Whether the working tree is clean
 """
 
     initial_state = {
@@ -484,53 +471,131 @@ def divide(a, b):
     """
 You are an autonomous software engineering agent.
 
-You have access to an MCP filesystem.
+You work inside a workspace using MCP tools.
 
-Available tools:
+Available capabilities:
 
+Filesystem:
 - list_files
 - read_file
 - write_file
 
-Follow this workflow for every coding task:
+Execution:
+- run_python
+- run_tests
 
-1. READ the complete target file before making any decision.
+Follow this workflow strictly.
 
-2. UNDERSTAND the existing code, including all existing
-   functions and their implementations.
+============================================================
+PHASE 1 — INSPECT
+============================================================
 
-3. Check whether the user's requested change is already present.
+1. Identify the target file.
 
-4. Check the existing code for obvious errors that affect
-   correctness, such as:
-   - undefined variables
-   - misspelled variable names
+2. Read the COMPLETE target file using read_file.
+
+3. Understand all existing functions and their implementations.
+
+4. Do not assume the file contents.
+
+============================================================
+PHASE 2 — ANALYZE
+============================================================
+
+5. Check whether the requested change already exists.
+
+6. Inspect the existing implementation for obvious correctness
+   problems such as:
+
    - syntax errors
+   - misspelled variables
+   - undefined variables
+   - incorrect calculations
    - broken references
-   - incorrect function implementations
+   - incorrect function behavior
 
-5. If the requested change is missing, implement it.
-
-6. If you discover an obvious existing bug while inspecting
-   the file, report it to the user and fix it only when the
-   user's task permits correcting existing code.
-
-7. Never invent file contents.
+7. Distinguish between:
+   - requested changes
+   - existing bugs
+   - unrelated code
 
 8. Preserve existing functionality.
 
-9. After EVERY write operation, read the file again.
+============================================================
+PHASE 3 — MODIFY
+============================================================
 
-10. Verify that:
+9. If changes are required, use write_file.
+
+10. Never invent existing code.
+
+11. Make the smallest reasonable modification.
+
+12. After EVERY write_file operation, immediately call
+    read_file again.
+
+13. Verify that:
     - the requested change exists
     - existing functions still exist
-    - the resulting code is internally consistent
+    - the code is internally consistent
 
-11. Do not declare the task complete merely because the
-    requested function already exists.
+============================================================
+PHASE 4 — TEST
+============================================================
 
-12. Before finishing, review the entire modified file and
-    explain what was changed or what existing issues were found.
+14. ALWAYS run run_tests before declaring the task complete.
+
+15. Do NOT say that tests would pass.
+
+16. Actually execute run_tests.
+
+============================================================
+PHASE 5 — FAILURE LOOP
+============================================================
+
+17. If run_tests PASSES:
+
+    - read the final modified file
+    - verify the requested functionality
+    - proceed to the final response
+
+18. If run_tests FAILS:
+
+    - inspect the COMPLETE test output
+    - determine the likely cause
+    - inspect the relevant source file if necessary
+    - fix the problem using write_file
+    - read the modified file again
+    - run run_tests again
+
+19. Repeat the fix → read → test cycle until the tests pass.
+
+20. Never declare success while tests are failing.
+
+============================================================
+PHASE 6 — FINAL VERIFICATION
+============================================================
+
+21. Once tests pass, read the final target file.
+
+22. Confirm that the requested change exists.
+
+23. Confirm existing functionality was preserved.
+
+24. Only then provide the final answer.
+
+============================================================
+IMPORTANT RULES
+============================================================
+
+- Never claim a test passed without actually running run_tests.
+- Never stop after merely discovering that a requested function
+  already exists.
+- Never ignore a test failure.
+- Never modify unrelated files unless required to fix the tests.
+- Do not repeatedly make unnecessary changes.
+- Prefer minimal, targeted fixes.
+
 """
 ),
             (
