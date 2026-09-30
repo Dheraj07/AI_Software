@@ -26,132 +26,132 @@ class AgentState(TypedDict):
 mcp = MCPClient()
 
 
-# @tool
-# async def list_files(directory: str = ".") -> str:
-#     """List files and directories inside the workspace."""
+@tool
+async def list_files(directory: str = ".") -> str:
+    """List files and directories inside the workspace."""
 
-#     result = await mcp.call_tool(
-#         "list_files",
-#         {
-#             "directory": directory
-#         }
-#     )
+    result = await mcp.call_tool(
+        "list_files",
+        {
+            "directory": directory
+        }
+    )
 
-#     if result.is_error:
-#         return f"ERROR: {result.content}"
+    if result.is_error:
+        return f"ERROR: {result.content}"
 
-#     return str(
-#         result.structured_content
-#         or result.content
-#     )
-
-
-# @tool
-# async def read_file(file_path: str) -> str:
-#     """Read a text file inside the workspace."""
-
-#     print(
-#         f"\n📖 MCP read_file → {file_path}"
-#     )
-
-#     result = await mcp.call_tool(
-#         "read_file",
-#         {
-#             "file_path": file_path
-#         }
-#     )
-
-#     if result.is_error:
-#         return f"ERROR: {result.content}"
-
-#     return str(
-#         result.structured_content
-#         or result.content
-#     )
+    return str(
+        result.structured_content
+        or result.content
+    )
 
 
-# @tool
-# async def write_file(
-#     file_path: str,
-#     content: str
-# ) -> str:
-#     """Write or replace a text file."""
+@tool
+async def read_file(file_path: str) -> str:
+    """Read a text file inside the workspace."""
 
-#     print(
-#         f"\n✍️ MCP write_file → {file_path}"
-#     )
+    print(
+        f"\n📖 MCP read_file → {file_path}"
+    )
 
-#     result = await mcp.call_tool(
-#         "write_file",
-#         {
-#             "file_path": file_path,
-#             "content": content
-#         }
-#     )
+    result = await mcp.call_tool(
+        "read_file",
+        {
+            "file_path": file_path
+        }
+    )
 
-#     if result.is_error:
-#         return f"ERROR: {result.content}"
+    if result.is_error:
+        return f"ERROR: {result.content}"
 
-#     return str(
-#         result.structured_content
-#         or result.content
-#     )
-
-# @tool
-# async def run_python(code: str) -> str:
-#     """Execute Python code inside the workspace."""
-
-#     print("\n🐍 MCP run_python")
-
-#     result = await mcp.call_tool(
-#         "run_python",
-#         {
-#             "code": code
-#         }
-#     )
-
-#     if result.is_error:
-#         return f"ERROR: {result.content}"
-
-#     return str(
-#         result.structured_content
-#         or result.content
-#     )
-
-# @tool
-# async def run_tests() -> str:
-#     """Run the project's pytest test suite."""
-
-#     print("\n🧪 MCP run_tests")
-
-#     result = await mcp.call_tool(
-#         "run_tests",
-#         {}
-#     )
-
-#     if result.is_error:
-#         return f"ERROR: {result.content}"
-
-#     return str(
-#         result.structured_content
-#         or result.content
-#     )
+    return str(
+        result.structured_content
+        or result.content
+    )
 
 
+@tool
+async def write_file(
+    file_path: str,
+    content: str
+) -> str:
+    """Write or replace a text file."""
 
-# tools = [
-#     list_files,
-#     read_file,
-#     write_file,
-#     run_python,
-#     run_tests
-# ]
+    print(
+        f"\n✍️ MCP write_file → {file_path}"
+    )
+
+    result = await mcp.call_tool(
+        "write_file",
+        {
+            "file_path": file_path,
+            "content": content
+        }
+    )
+
+    if result.is_error:
+        return f"ERROR: {result.content}"
+
+    return str(
+        result.structured_content
+        or result.content
+    )
+
+@tool
+async def run_python(code: str) -> str:
+    """Execute Python code inside the workspace."""
+
+    print("\n🐍 MCP run_python")
+
+    result = await mcp.call_tool(
+        "run_python",
+        {
+            "code": code
+        }
+    )
+
+    if result.is_error:
+        return f"ERROR: {result.content}"
+
+    return str(
+        result.structured_content
+        or result.content
+    )
+
+@tool
+async def run_tests() -> str:
+    """Run the project's pytest test suite."""
+
+    print("\n🧪 MCP run_tests")
+
+    result = await mcp.call_tool(
+        "run_tests",
+        {}
+    )
+
+    if result.is_error:
+        return f"ERROR: {result.content}"
+
+    return str(
+        result.structured_content
+        or result.content
+    )
 
 
-# tool_map = {
-#     tool.name: tool
-#     for tool in tools
-# }
+
+tools = [
+    list_files,
+    read_file,
+    write_file,
+    run_python,
+    run_tests
+]
+
+
+tool_map = {
+    tool.name: tool
+    for tool in tools
+}
 
 
 # ============================================================
@@ -164,7 +164,7 @@ llm = ChatOllama(
     base_url="http://localhost:11434",
 )
 
-# llm_with_tools = llm.bind_tools(tools)
+llm_with_tools = llm.bind_tools(tools)
 
 
 # ============================================================

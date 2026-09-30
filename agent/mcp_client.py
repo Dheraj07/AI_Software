@@ -81,62 +81,64 @@ from mcp.client.stdio import stdio_client
 from langchain_core.tools import StructuredTool
 from pydantic import create_model
 from typing import Any
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 class MCPClient:
 
     def __init__(self):
-
         self.sessions = {}
-
+        self.tool_map = {}
         self.exit_stack = AsyncExitStack()
 
-    async def connect_server(
-        self,
-        name: str,
-        script_path: str,
-    ):
-
-        print(
-            f"Connecting to {name} MCP server..."
-        )
+    async def connect_server(self, name: str, script_path: Path):
+        print(f"Connecting to {name} MCP server...", file=sys.stderr)
 
         server_params = StdioServerParameters(
-            command="python",
-            args=[script_path],
-            env=None,
+            command=sys.executable,
+            args=[str(script_path)],
         )
 
-        stdio_transport = (
-            await self.exit_stack.enter_async_context(
-                stdio_client(server_params)
-            )
+        read, write = await self.exit_stack.enter_async_context(
+            stdio_client(server_params)
         )
-
-        read, write = stdio_transport
-
         session = await self.exit_stack.enter_async_context(
             ClientSession(read, write)
         )
-
         await session.initialize()
-
-        self.sessions[name] = session
+        response = await session.list_tools()
 
         print(
-            f"Connected to {name} MCP server."
+            f"\n{name} tools:",
+            file=sys.stderr,
+            flush=True
         )
+
+        for tool in response.tools:
+            print(
+                f"  - {tool.name}",
+                file=sys.stderr,
+                flush=True
+            )
+        self.sessions[name] = session
+
 
     async def connect(self):
 
         await self.connect_server(
             "filesystem",
-            "mcp_server/filesystem_server.py",
+            PROJECT_ROOT / "mcp_server" / "filesystem_server.py"
         )
 
         await self.connect_server(
             "execution",
-            "mcp_server/execution_server.py",
+            PROJECT_ROOT / "mcp_server" / "execution_server.py"
         )
+
+        await self.list_tools()
 
     async def list_tools(self):
 
@@ -156,38 +158,115 @@ class MCPClient:
         return self.tool_map
 
     async def call_tool(
-        self,
-        tool_name: str,
-        arguments: dict,
-    ):
+    self,
+    tool_name: str,
+    arguments: dict,
+):
+
+        print(
+            f"\n1️⃣ call_tool entered: {tool_name}",
+            file=sys.stderr,
+            flush=True
+        )
+
+        print(
+            f"DEBUG tool_map = {self.tool_map}",
+            file=sys.stderr,
+            flush=True
+        )
+
+        print(
+            f"DEBUG tool_name = {tool_name}",
+            file=sys.stderr,
+            flush=True
+        )
 
         if tool_name not in self.tool_map:
-
+    
             raise ValueError(
                 f"Unknown MCP tool: {tool_name}"
             )
-
+    
         server_name = self.tool_map[
             tool_name
         ]["server"]
-
+    
+        print(
+            f"2️⃣ Server selected: {server_name}",
+            file=sys.stderr,
+            flush=True
+        )
         session = self.sessions[
             server_name
         ]
 
         print(
-            f"\n🔧 MCP [{server_name}] "
-            f"→ {tool_name}"
+            f"3️⃣ Session obtained",
+            file=sys.stderr,
+            flush=True
         )
 
-        return await session.call_tool(
+        print(
+            f"4️⃣ Calling session.call_tool()",
+            file=sys.stderr,
+            flush=True
+        )
+
+        result = await session.call_tool(
             tool_name,
             arguments,
         )
 
+        print(
+            f"5️⃣ session.call_tool() returned",
+            file=sys.stderr,
+            flush=True
+        )
+
+        return result
+
     def get_langchain_tools(self):
 
         tools = []
+
+        def create_tool(
+            tool_name,
+            mcp_tool,
+            args_schema
+        ):
+
+            async def execute_tool(**kwargs):
+
+                print(
+                    f"\n🔧 MCP {tool_name}"
+                )
+
+                print(
+                    f"Arguments: {kwargs}"
+                )
+
+                result = await self.call_tool(
+                    tool_name,
+                    kwargs
+                )
+
+                if result.is_error:
+                    return f"ERROR: {result.content}"
+
+                return str(
+                    result.structured_content
+                    or result.content
+                )
+
+            return StructuredTool.from_function(
+                name=mcp_tool.name,
+                description=(
+                    mcp_tool.description
+                    or f"MCP tool: {mcp_tool.name}"
+                ),
+                coroutine=execute_tool,
+                args_schema=args_schema,
+            )
 
         for tool_name, info in self.tool_map.items():
 
@@ -244,43 +323,11 @@ class MCPClient:
                 **fields
             )
 
-            async def execute_tool(
-                name=tool_name,
-                **kwargs
-            ):
-
-                print(
-                    f"\n🔧 MCP {name}"
-                )
-
-                print(
-                    f"Arguments: {kwargs}"
-                )
-
-                result = await self.call_tool(
-                    name,
-                    kwargs
-                )
-
-                if result.is_error:
-                    return (
-                        f"ERROR: {result.content}"
-                    )
-
-                return str(
-                    result.structured_content
-                    or result.content
-                )
-
             tools.append(
-                StructuredTool.from_function(
-                    name=mcp_tool.name,
-                    description=(
-                        mcp_tool.description
-                        or f"MCP tool: {mcp_tool.name}"
-                    ),
-                    coroutine=execute_tool,
-                    args_schema=args_schema,
+                create_tool(
+                    tool_name,
+                    mcp_tool,
+                    args_schema
                 )
             )
 

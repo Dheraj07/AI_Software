@@ -1,9 +1,10 @@
 from pathlib import Path
 import subprocess
+import sys
 
 from mcp.server.mcpserver import MCPServer
 
-import sys
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
@@ -31,12 +32,26 @@ async def run_python(code: str) -> str:
     Execute a Python code snippet inside the workspace.
     """
 
-    print("\n🐍 Executing Python code...")
+    print(
+        "🚀 RUN_PYTHON TOOL ENTERED",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    print(
+        f"Code received: {code}",
+        file=sys.stderr,
+        flush=True,
+    )
 
     try:
 
         result = subprocess.run(
-            ["python", "-c", code],
+            [
+                sys.executable,
+                "-c",
+                code,
+            ],
             cwd=WORKSPACE,
             capture_output=True,
             text=True,
@@ -89,42 +104,60 @@ async def run_tests() -> str:
     Run the calculator project's pytest test suite.
     """
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "workspace/calculator/tests",
-        ],
-        cwd=WORKSPACE,
-        capture_output=True,
-        text=True,
+    print(
+        "🧪 RUN_TESTS TOOL ENTERED",
+        file=sys.stderr,
+        flush=True,
     )
 
-    return (
-        f"STDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}\n"
-        f"EXIT CODE: {result.returncode}\n"
-        f"TEST STATUS: "
-        f"{'PASSED' if result.returncode == 0 else 'FAILED'}"
-    )
+    try:
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "calculator/tests",
+            ],
+            cwd=WORKSPACE / "workspace",
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        return (
+            f"STDOUT:\n{result.stdout}\n"
+            f"STDERR:\n{result.stderr}\n"
+            f"EXIT CODE: {result.returncode}\n"
+            f"TEST STATUS: "
+            f"{'PASSED' if result.returncode == 0 else 'FAILED'}"
+        )
+
+    except subprocess.TimeoutExpired:
+
+        return (
+            "ERROR: Test execution "
+            "timed out."
+        )
+
+    except Exception as e:
+
+        return (
+            f"ERROR: "
+            f"{type(e).__name__}: {e}"
+        )
 
 
 # ============================================================
 # START SERVER
 # ============================================================
 
-# if __name__ == "__main__":
-#     server.run(
-#         transport="stdio"
-#     )
 if __name__ == "__main__":
-
-    import sys
 
     print(
         "Starting Execution MCP Server...",
         file=sys.stderr,
+        flush=True,
     )
 
     server.run(

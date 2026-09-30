@@ -13,11 +13,13 @@ async def main():
 
     print("2. Connected")
 
-    print("3. Calling run_tests...")
+    print("3. Calling run_python...")
 
     result = await mcp.call_tool(
-        "run_tests",
-        {}
+        "run_python",
+        {
+            "code": "print('HELLO FROM EXECUTION MCP')"
+        }
     )
 
     print("4. Result:")

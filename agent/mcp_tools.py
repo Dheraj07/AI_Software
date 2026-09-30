@@ -14,6 +14,12 @@ async def main():
     await mcp.connect()
 
     print("2. Connected")
+    tools = await mcp.list_tools()
+
+    print(
+        "Available tools:",
+        list(tools.keys())
+)
 
     @tool
     async def read_file(file_path: str) -> str:
@@ -41,7 +47,8 @@ async def main():
 
     result = await read_file.ainvoke(
         {
-            "file_path": "calculator/utils.py"
+            # "file_path": "workspace/calculator/utils.py"
+            "file_path": "/Users/dherajmajeti/Documents/ai-software-team/workspace/calculator/tests/test_utils.py"
         }
     )
 
