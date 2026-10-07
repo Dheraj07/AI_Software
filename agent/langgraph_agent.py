@@ -17,6 +17,10 @@ from mcp_client import MCPClient
 
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
+    test_passed: bool
+    retry_count: int
+    max_retries: int
+    ran_tests: bool
 
 
 # ============================================================
@@ -287,10 +291,93 @@ def should_continue(state: AgentState):
 
     return END
 
+def test_router(state: AgentState):
 
+    if state["test_passed"]:
+        print("\n✅ Tests passed.")
+        return "success"
+
+    if state["retry_count"] < state["max_retries"]:
+        print(
+            f"\n❌ Tests failed. "
+            f"Retry {state['retry_count']}/{state['max_retries']}"
+            )
+        return "fix"
+
+    print(
+            f"\n🛑 Maximum retries reached "
+            f"({state['max_retries']})."
+        )
+
+    return "failed"
+
+
+
+async def test_node(state: AgentState):
+
+    print("\n" + "=" * 60)
+    print("🧪 TEST NODE")
+    print("=" * 60)
+
+    selected_tool = tool_map.get("run_tests")
+    if selected_tool is None:
+        print("❌ run_tests tool not found")
+
+        return {
+                "messages": [
+                    ToolMessage(
+                        content="ERROR: run_tests tool not found",
+                        tool_call_id="test_node"
+                    )
+                ],
+                "test_passed": False,
+                "retry_count": state["retry_count"] + 1
+            }
+
+    try:
+        result = await selected_tool.ainvoke({})
+
+    except Exception as e:
+        result = f"ERROR: {type(e).__name__}: {e}"
+
+    print("\nTest result:")
+    print(result)
+
+    test_passed = (
+            "TEST STATUS: PASSED" in str(result)
+            or "5 passed" in str(result)
+        )
+
+    retry_count = state["retry_count"]
+
+    if not test_passed:
+        retry_count += 1
+
+    return {
+            "messages": [
+                ToolMessage(
+                    content=str(result),
+                    tool_call_id="test_node"
+                )
+            ],
+            "test_passed": test_passed,
+            "retry_count": retry_count
+        }
+
+
+
+def after_tools(state: AgentState):
+
+    if state["ran_tests"]:
+        print("\n🧪 run_tests was executed → TEST NODE")
+        return "test"
+
+    print("\n🔄 More agent reasoning required → AGENT")
+    return "agent"
 # ============================================================
 # BUILD GRAPH
 # ============================================================
+
 
 def build_graph(tools):
 
@@ -346,11 +433,15 @@ def build_graph(tools):
         last_message = state["messages"][-1]
 
         results = []
+        ran_tests = False
 
         for call in last_message.tool_calls:
 
             tool_name = call["name"]
             arguments = call["args"]
+
+            if tool_name == "run_tests":
+                ran_tests = True
 
             print(f"\nExecuting: {tool_name}")
             print(f"Arguments: {arguments}")
@@ -390,7 +481,8 @@ def build_graph(tools):
             )
 
         return {
-            "messages": results
+            "messages": results,
+            "ran_tests": ran_tests
         }
 
     graph.add_node(
@@ -401,6 +493,10 @@ def build_graph(tools):
     graph.add_node(
         "tools",
         dynamic_tool_node
+    )
+    graph.add_node(
+        "test",
+        test_node
     )
 
     graph.add_edge(
@@ -417,12 +513,27 @@ def build_graph(tools):
         }
     )
 
-    graph.add_edge(
-        "tools",
-        "agent"
+    graph.add_conditional_edges(
+    "tools",
+    after_tools,
+    {
+        "test": "test",
+        "agent": "agent",
+    }
+)
+
+    graph.add_conditional_edges(
+        "test",
+        test_router,
+        {
+            "success": END,
+            "fix": "agent",
+            "failed": END,
+        }
     )
 
     return graph.compile()
+
 
 
 # ============================================================
@@ -448,13 +559,30 @@ async def main():
     graph = build_graph(tools)
 
     print("LangGraph compiled.")
+    # png_data = graph.get_graph().draw_mermaid_png()
+
+    # with open("langgraph_tree.png", "wb") as f:
+    #     f.write(png_data)
+
+    # print("Graph saved as langgraph_tree.png")
 
     # --------------------------------------------------------
     # USER TASK
     # --------------------------------------------------------
 
     task = """
-    
+Inspect the calculator project.
+
+There may be an error in the implementation.
+Read the relevant source files and tests.
+Identify the problem and fix it.
+
+After making the fix:
+1. Run the test suite.
+2. Check the Git diff.
+3. Do not commit anything.
+
+Report what you changed and whether all tests passed.
 Check the current Git repository status.
 
 Use the git_status tool and report:
@@ -602,7 +730,11 @@ IMPORTANT RULES
                 "human",
                 task
             )
-        ]
+        ],
+        "test_passed": False,
+        "retry_count": 0,
+        "max_retries": 3,
+        "ran_tests": False
     }
 
     print("\nStarting LangGraph agent...")
