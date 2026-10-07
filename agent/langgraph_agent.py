@@ -739,12 +739,12 @@ async def main():
     graph = build_graph(tools)
 
     print("LangGraph compiled.")
-    # png_data = graph.get_graph().draw_mermaid_png()
+    png_data = graph.get_graph().draw_mermaid_png()
 
-    # with open("langgraph_tree.png", "wb") as f:
-    #     f.write(png_data)
+    with open("langgraph_tree.png", "wb") as f:
+        f.write(png_data)
 
-    # print("Graph saved as langgraph_tree.png")
+    print("Graph saved as langgraph_tree.png")
 
     # --------------------------------------------------------
     # USER TASK
