@@ -484,6 +484,62 @@ async def test_node(state: AgentState):
         "retry_count": retry_count
     }
 
+
+# async def review_node(state: AgentState):
+
+#     print("\n" + "=" * 60, flush=True)
+#     print("🔍 REVIEW NODE", flush=True)
+#     print("=" * 60, flush=True)
+
+#     print(
+#         "📋 Checking Git diff and repository status...",
+#         flush=True
+#     )
+
+#     git_diff_tool = tool_map.get("git_diff")
+#     git_status_tool = tool_map.get("git_status")
+
+#     results = []
+
+#     if git_diff_tool is None:
+#         print("❌ git_diff tool not found", flush=True)
+#     else:
+#         print("🔎 Calling git_diff...", flush=True)
+
+#         diff = await git_diff_tool.ainvoke({})
+
+#         print("\n📄 Git diff:", flush=True)
+#         print(diff, flush=True)
+
+#         results.append(
+#             ToolMessage(
+#                 content=str(diff),
+#                 tool_call_id="git_diff_review"
+#             )
+#         )
+
+#     if git_status_tool is None:
+#         print("❌ git_status tool not found", flush=True)
+#     else:
+#         print("🔎 Calling git_status...", flush=True)
+
+#         status = await git_status_tool.ainvoke({})
+
+#         print("\n📊 Git status:", flush=True)
+#         print(status, flush=True)
+
+#         results.append(
+#             ToolMessage(
+#                 content=str(status),
+#                 tool_call_id="git_status_review"
+#             )
+#         )
+
+#     return {
+#         "messages": results
+#     }
+
+
 def after_tools(state: AgentState):
 
     if state["ran_tests"]:
@@ -547,48 +603,7 @@ def build_graph(tools):
             "messages": [response]
         }
 
-    # async def dynamic_agent_node(state: AgentState):
-
-    #     print("\n" + "=" * 60)
-    #     print("🤖 AGENT NODE")
-    #     print("=" * 60)
-
-    #     messages = state["messages"]
-
-    #     print(f"📨 Messages in state: {len(messages)}")
-
-    #     total_chars = 0
-
-    #     for i, msg in enumerate(messages):
-    #         content = getattr(msg, "content", "")
-    #         content_length = len(str(content))
-    #         total_chars += content_length
-
-    #         print(
-    #             f"   [{i}] {type(msg).__name__}: "
-    #             f"{content_length} chars"
-    #         )
-
-    #     print(f"📊 Total message content: {total_chars:,} chars")
-
-    #     response = await llm_with_tools.ainvoke(
-    #         messages
-    #     )
-
-    #     if response.tool_calls:
-
-    #         print("\nQwen requested:")
-
-    #         for call in response.tool_calls:
-    #             print(f"  🔧 {call['name']}")
-    #             print(f"     {call['args']}")
-
-    #     else:
-    #         print("\nQwen produced final answer.")
-
-    #     return {
-    #         "messages": [response]
-    #     }
+    
 
     async def dynamic_tool_node(state: AgentState):
 
@@ -650,6 +665,77 @@ def build_graph(tools):
             "messages": results,
             "ran_tests": ran_tests
         }
+    async def review_node(state: AgentState):
+
+        print("\n" + "=" * 60, flush=True)
+        print("🔍 REVIEW NODE", flush=True)
+        print("=" * 60, flush=True)
+
+        print(
+            "📋 Checking Git diff and repository status...",
+            flush=True
+        )
+
+        git_diff_tool = tool_map.get("git_diff")
+        git_status_tool = tool_map.get("git_status")
+
+        results = []
+
+        if git_diff_tool is None:
+            print(
+                "❌ git_diff tool not found",
+                flush=True
+            )
+        else:
+            print(
+                "🔎 Calling git_diff...",
+                flush=True
+            )
+
+            diff = await git_diff_tool.ainvoke({})
+
+            print(
+                "\n📄 Git diff:",
+                flush=True
+            )
+            print(diff, flush=True)
+
+            results.append(
+                ToolMessage(
+                    content=str(diff),
+                    tool_call_id="git_diff_review"
+                )
+            )
+
+        if git_status_tool is None:
+            print(
+                "❌ git_status tool not found",
+                flush=True
+            )
+        else:
+            print(
+                "🔎 Calling git_status...",
+                flush=True
+            )
+
+            status = await git_status_tool.ainvoke({})
+
+            print(
+                "\n📊 Git status:",
+                flush=True
+            )
+            print(status, flush=True)
+
+            results.append(
+                ToolMessage(
+                    content=str(status),
+                    tool_call_id="git_status_review"
+                )
+            )
+
+        return {
+            "messages": results
+        }
 
     graph.add_node(
         "agent",
@@ -668,7 +754,11 @@ def build_graph(tools):
         "verify", 
         verify_node
     )
-
+    
+    graph.add_node(
+        "review", 
+        review_node
+    )
 
     graph.add_edge(
         START,
@@ -697,7 +787,7 @@ def build_graph(tools):
         "test",
         test_router,
         {
-            "success": END,
+            "success": "review",
             "fix": "agent",
             "failed": END,
         }
@@ -711,6 +801,7 @@ def build_graph(tools):
             "success": END,
         }
     )
+    graph.add_edge("review", END)
 
     return graph.compile()
 
