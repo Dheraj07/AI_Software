@@ -276,7 +276,26 @@ async def tool_node(state: AgentState):
         "messages": results
     }
 
+def verify_node(state: AgentState):
 
+    print("\n" + "=" * 60)
+    print("🔍 VERIFY NODE")
+    print("=" * 60)
+
+    if state["ran_tests"]:
+        print("✅ Tests have already been executed.")
+
+        if state["test_passed"]:
+            print("✅ Tests passed → END")
+            return {}
+
+        print("❌ Tests failed → AGENT")
+        return {}
+
+    print("⚠️ Tests have NOT been executed.")
+    print("🧪 → TEST NODE")
+
+    return {}
 # ============================================================
 # ROUTER
 # ============================================================
@@ -288,8 +307,14 @@ def should_continue(state: AgentState):
     if last_message.tool_calls:
 
         return "tools"
+    # Do not allow the agent to finish before
+    # the test suite has actually passed.
+    # if not state["test_passed"]:
+    #     print("\n⚠️ Agent attempted to finish before tests passed.")
+    #     print("🧪 Forcing TEST NODE...")
+    #     return "test"
 
-    return END
+    return "verify"
 
 def test_router(state: AgentState):
 
@@ -312,41 +337,136 @@ def test_router(state: AgentState):
     return "failed"
 
 
+def verify_router(state: AgentState):
+
+    if state["ran_tests"]:
+
+        if state["test_passed"]:
+            return "success"
+
+        return "fix"
+
+    return "test"
+
+# async def test_node(state: AgentState):
+
+#     print("\n" + "=" * 60)
+#     print("🧪 TEST NODE")
+#     print("=" * 60)
+
+#     selected_tool = tool_map.get("run_tests")
+#     if selected_tool is None:
+#         print("❌ run_tests tool not found")
+
+#         return {
+#                 "messages": [
+#                     ToolMessage(
+#                         content="ERROR: run_tests tool not found",
+#                         tool_call_id="test_node"
+#                     )
+#                 ],
+#                 "test_passed": False,
+#                 "retry_count": state["retry_count"] + 1
+#             }
+
+#     try:
+#         result = await selected_tool.ainvoke({})
+
+#     except Exception as e:
+#         result = f"ERROR: {type(e).__name__}: {e}"
+
+#     print("\nTest result:")
+#     print(result)
+
+#     test_passed = (
+#             "TEST STATUS: PASSED" in str(result)
+#             or "5 passed" in str(result)
+#         )
+
+#     retry_count = state["retry_count"]
+
+#     if not test_passed:
+#         retry_count += 1
+
+#     return {
+#             "messages": [
+#                 ToolMessage(
+#                     content=str(result),
+#                     tool_call_id="test_node"
+#                 )
+#             ],
+#             "test_passed": test_passed,
+#             "retry_count": retry_count
+#         }
 
 async def test_node(state: AgentState):
 
-    print("\n" + "=" * 60)
-    print("🧪 TEST NODE")
-    print("=" * 60)
+    print("\n" + "=" * 60, flush=True)
+    print("🧪 TEST NODE ENTERED", flush=True)
+    print("=" * 60, flush=True)
 
     selected_tool = tool_map.get("run_tests")
+
+    print(
+        f"🔎 run_tests tool = {selected_tool}",
+        flush=True
+    )
+
     if selected_tool is None:
-        print("❌ run_tests tool not found")
+
+        print("❌ run_tests tool not found", flush=True)
 
         return {
-                "messages": [
-                    ToolMessage(
-                        content="ERROR: run_tests tool not found",
-                        tool_call_id="test_node"
-                    )
-                ],
-                "test_passed": False,
-                "retry_count": state["retry_count"] + 1
-            }
+            "messages": [
+                ToolMessage(
+                    content="ERROR: run_tests tool not found",
+                    tool_call_id="test_node"
+                )
+            ],
+            "test_passed": False,
+            "retry_count": state["retry_count"] + 1
+        }
+
+    print("🚀 Calling run_tests...", flush=True)
 
     try:
-        result = await selected_tool.ainvoke({})
+
+        result = await asyncio.wait_for(
+            selected_tool.ainvoke({}),
+            timeout=30
+        )
+
+    except asyncio.TimeoutError:
+
+        print(
+            "⏰ run_tests TIMED OUT after 30 seconds",
+            flush=True
+        )
+
+        result = (
+            "TEST STATUS: TIMEOUT\n"
+            "run_tests exceeded 30 seconds."
+        )
 
     except Exception as e:
-        result = f"ERROR: {type(e).__name__}: {e}"
 
-    print("\nTest result:")
-    print(result)
+        print(
+            f"❌ run_tests exception: "
+            f"{type(e).__name__}: {e}",
+            flush=True
+        )
+
+        result = (
+            f"ERROR: {type(e).__name__}: {e}"
+        )
+
+    print("\nTest result:", flush=True)
+    print(result, flush=True)
 
     test_passed = (
-            "TEST STATUS: PASSED" in str(result)
-            or "5 passed" in str(result)
-        )
+        "TEST STATUS: PASSED" in str(result)
+        or "5 passed" in str(result)
+    )
 
     retry_count = state["retry_count"]
 
@@ -354,17 +474,15 @@ async def test_node(state: AgentState):
         retry_count += 1
 
     return {
-            "messages": [
-                ToolMessage(
-                    content=str(result),
-                    tool_call_id="test_node"
-                )
-            ],
-            "test_passed": test_passed,
-            "retry_count": retry_count
-        }
-
-
+        "messages": [
+            ToolMessage(
+                content=str(result),
+                tool_call_id="test_node"
+            )
+        ],
+        "test_passed": test_passed,
+        "retry_count": retry_count
+    }
 
 def after_tools(state: AgentState):
 
@@ -374,6 +492,11 @@ def after_tools(state: AgentState):
 
     print("\n🔄 More agent reasoning required → AGENT")
     return "agent"
+
+
+
+
+
 # ============================================================
 # BUILD GRAPH
 # ============================================================
@@ -423,6 +546,49 @@ def build_graph(tools):
         return {
             "messages": [response]
         }
+
+    # async def dynamic_agent_node(state: AgentState):
+
+    #     print("\n" + "=" * 60)
+    #     print("🤖 AGENT NODE")
+    #     print("=" * 60)
+
+    #     messages = state["messages"]
+
+    #     print(f"📨 Messages in state: {len(messages)}")
+
+    #     total_chars = 0
+
+    #     for i, msg in enumerate(messages):
+    #         content = getattr(msg, "content", "")
+    #         content_length = len(str(content))
+    #         total_chars += content_length
+
+    #         print(
+    #             f"   [{i}] {type(msg).__name__}: "
+    #             f"{content_length} chars"
+    #         )
+
+    #     print(f"📊 Total message content: {total_chars:,} chars")
+
+    #     response = await llm_with_tools.ainvoke(
+    #         messages
+    #     )
+
+    #     if response.tool_calls:
+
+    #         print("\nQwen requested:")
+
+    #         for call in response.tool_calls:
+    #             print(f"  🔧 {call['name']}")
+    #             print(f"     {call['args']}")
+
+    #     else:
+    #         print("\nQwen produced final answer.")
+
+    #     return {
+    #         "messages": [response]
+    #     }
 
     async def dynamic_tool_node(state: AgentState):
 
@@ -498,6 +664,11 @@ def build_graph(tools):
         "test",
         test_node
     )
+    graph.add_node(
+        "verify", 
+        verify_node
+    )
+
 
     graph.add_edge(
         START,
@@ -509,7 +680,7 @@ def build_graph(tools):
         should_continue,
         {
             "tools": "tools",
-            END: END,
+            "verify": "verify",
         }
     )
 
@@ -529,6 +700,15 @@ def build_graph(tools):
             "success": END,
             "fix": "agent",
             "failed": END,
+        }
+    )
+    graph.add_conditional_edges(
+        "verify",
+        verify_router,
+        {
+            "test": "test",
+            "fix": "agent",
+            "success": END,
         }
     )
 
@@ -611,6 +791,13 @@ Filesystem:
 Execution:
 - run_python
 - run_tests
+
+Git:
+- git_status
+- git_diff
+- git_log
+- git_add
+- git_commit
 
 Follow this workflow strictly.
 
