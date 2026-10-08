@@ -2,7 +2,7 @@ import asyncio
 
 from langchain_ollama import ChatOllama
 from langchain_core.tools import tool
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage, HumanMessage
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -736,6 +736,59 @@ def build_graph(tools):
         return {
             "messages": results
         }
+    async def final_agent_node(state: AgentState):
+
+        print("\n" + "=" * 60, flush=True)
+        print("🧠 FINAL AGENT NODE", flush=True)
+        print("=" * 60, flush=True)
+
+        final_instruction = HumanMessage(
+            content="""
+You are now in the final reporting stage.
+
+The software engineering task has completed its execution and review stages.
+
+Using the complete conversation history, especially:
+- the original user task
+- files inspected
+- changes made
+- test results
+- Git diff
+- Git status
+
+produce a concise final software-engineering report.
+
+Your report MUST include:
+
+1. Task status
+2. What was changed
+3. Test results
+4. Git branch
+5. Modified files
+6. Untracked files
+7. Whether the working tree is clean
+8. Confirm that no Git commit was created
+
+Do not perform any more tool calls.
+Do not modify any files.
+Do not invent information that is not present in the conversation.
+
+Return only the final human-readable report.
+"""
+        )
+
+        messages = [
+            *state["messages"],
+            final_instruction
+        ]
+
+        response = await llm.ainvoke(messages)
+
+        print("\n📝 Final report generated.", flush=True)
+
+        return {
+            "messages": [response]
+        }
 
     graph.add_node(
         "agent",
@@ -758,6 +811,10 @@ def build_graph(tools):
     graph.add_node(
         "review", 
         review_node
+    )
+    graph.add_node(
+        "final",
+        final_agent_node
     )
 
     graph.add_edge(
@@ -801,8 +858,8 @@ def build_graph(tools):
             "success": END,
         }
     )
-    graph.add_edge("review", END)
-
+    graph.add_edge("review", "final")
+    graph.add_edge("final", END)
     return graph.compile()
 
 
