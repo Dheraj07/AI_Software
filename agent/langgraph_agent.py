@@ -17,6 +17,10 @@ from mcp_client import MCPClient
 
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
+
+    plan: list[str]
+    current_step: int
+
     test_passed: bool
     retry_count: int
     max_retries: int
@@ -475,9 +479,19 @@ async def test_node(state: AgentState):
 
     return {
         "messages": [
-            ToolMessage(
-                content=str(result),
-                tool_call_id="test_node"
+            HumanMessage(
+                content=f"""
+    TEST EXECUTION RESULT:
+
+    {result}
+
+    The tests have failed.
+
+    Analyze the failure carefully.
+    Inspect the relevant source code and tests.
+    Fix the implementation causing the failure.
+    Then run the tests again.
+    """
             )
         ],
         "test_passed": test_passed,
@@ -570,6 +584,61 @@ def build_graph(tools):
     graph = StateGraph(
         AgentState
     )
+
+    async def planner_node(state: AgentState):
+
+        print("\n" + "=" * 60, flush=True)
+        print("🧠 PLANNER NODE", flush=True)
+        print("=" * 60, flush=True)
+
+        planning_prompt = HumanMessage(
+            content="""
+    Analyze the user's software engineering task and create a
+    clear execution plan.
+
+    Break the task into concrete engineering steps.
+
+    The plan should include:
+    1. Repository inspection
+    2. Source/test analysis
+    3. Required implementation changes
+    4. Testing
+    5. Failure correction if tests fail
+    6. Git diff review
+    7. Git status review
+    8. Final reporting
+
+    Do NOT perform any actions.
+    Do NOT call tools.
+    Return only a numbered execution plan.
+    """
+        )
+
+        messages = [
+            *state["messages"],
+            planning_prompt
+        ]
+
+        response = await llm.ainvoke(messages)
+
+        plan_text = response.content
+
+        print("\n📋 Generated Plan:", flush=True)
+        print(plan_text, flush=True)
+
+        plan = []
+
+        for line in str(plan_text).splitlines():
+            line = line.strip()
+
+            if line:
+                plan.append(line)
+
+        return {
+            "messages": [response],
+            "plan": plan,
+            "current_step": 0
+        }
 
     async def dynamic_agent_node(state: AgentState):
 
@@ -791,6 +860,11 @@ Return only the final human-readable report.
         }
 
     graph.add_node(
+            "planner",
+            planner_node
+    )
+
+    graph.add_node(
         "agent",
         dynamic_agent_node
     )
@@ -816,9 +890,14 @@ Return only the final human-readable report.
         "final",
         final_agent_node
     )
+    
 
     graph.add_edge(
         START,
+        "planner"
+    )
+    graph.add_edge(
+        "planner",
         "agent"
     )
 
@@ -1066,6 +1145,9 @@ IMPORTANT RULES
                 task
             )
         ],
+        "plan": [],
+        "current_step": 0,
+
         "test_passed": False,
         "retry_count": 0,
         "max_retries": 3,

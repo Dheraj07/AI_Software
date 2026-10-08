@@ -23,19 +23,53 @@ server = MCPServer(
 # Security
 # ============================================================
 
+# def safe_path(relative_path: str) -> Path:
+#     """
+#     Resolve a path while ensuring that it remains
+#     inside the workspace directory.
+#     """
+
+#     workspace = WORKSPACE.resolve()
+#     target = (workspace / relative_path).resolve()
+
+#     # Prevent:
+#     # ../../something
+#     # /absolute/path
+#     # symlink escapes
+#     if target != workspace and workspace not in target.parents:
+#         raise ValueError(
+#             f"Access denied: {relative_path} "
+#             "is outside the workspace."
+#         )
+
+#     return target
 def safe_path(relative_path: str) -> Path:
     """
-    Resolve a path while ensuring that it remains
-    inside the workspace directory.
+    Resolve a path inside the workspace.
+
+    The MCP workspace is already rooted at /workspace,
+    so paths should normally be relative to it.
+
+    If the agent accidentally prefixes the path with
+    'workspace/', remove that redundant prefix.
     """
 
     workspace = WORKSPACE.resolve()
+
+    relative_path = relative_path.strip()
+
+    # Normalize the common mistake:
+    # workspace/calculator/utils.py
+    # -> calculator/utils.py
+    if relative_path == "workspace":
+        relative_path = "."
+
+    elif relative_path.startswith("workspace/"):
+        relative_path = relative_path[len("workspace/"):]
+
     target = (workspace / relative_path).resolve()
 
-    # Prevent:
-    # ../../something
-    # /absolute/path
-    # symlink escapes
+    # Security boundary
     if target != workspace and workspace not in target.parents:
         raise ValueError(
             f"Access denied: {relative_path} "
@@ -43,7 +77,6 @@ def safe_path(relative_path: str) -> Path:
         )
 
     return target
-
 
 # ============================================================
 # MCP TOOLS
@@ -80,6 +113,11 @@ async def list_files(directory: str = ".") -> list[str]:
 async def read_file(file_path: str) -> str:
 
     path = safe_path(file_path)
+    print(
+        f"[DEBUG] Reading: {path}",
+        flush=True
+    )
+
 
     if not path.exists():
         raise ValueError(
@@ -118,109 +156,7 @@ async def write_file(
 
     return f"Successfully wrote: {file_path}"
 
-# @server.tool()
-# async def run_python(code: str) -> str:
-#     """
-#     Execute a Python code snippet inside the workspace
-#     and return stdout/stderr.
-#     """
 
-#     import subprocess
-
-#     try:
-#         result = subprocess.run(
-#             ["python", "-c", code],
-#             cwd=WORKSPACE,
-#             capture_output=True,
-#             text=True,
-#             timeout=30,
-#         )
-
-#         output = ""
-
-#         if result.stdout:
-#             output += (
-#                 "STDOUT:\n"
-#                 + result.stdout
-#             )
-
-#         if result.stderr:
-#             output += (
-#                 "\nSTDERR:\n"
-#                 + result.stderr
-#             )
-
-#         output += (
-#             f"\nEXIT CODE: {result.returncode}"
-#         )
-
-#         return output
-
-#     except subprocess.TimeoutExpired:
-
-#         return (
-#             "ERROR: Python execution timed out."
-#         )
-
-#     except Exception as e:
-
-#         return (
-#             f"ERROR: {type(e).__name__}: {e}"
-#         )
-    
-# @server.tool()
-# async def run_tests() -> str:
-#     """
-#     Run the project's pytest test suite and return the results.
-#     """
-
-#     import subprocess
-
-#     try:
-#         result = subprocess.run(
-#             ["python", "-m", "pytest"],
-#             cwd=WORKSPACE,
-#             capture_output=True,
-#             text=True,
-#             timeout=60,
-#         )
-
-#         output = ""
-
-#         if result.stdout:
-#             output += (
-#                 "STDOUT:\n"
-#                 + result.stdout
-#             )
-
-#         if result.stderr:
-#             output += (
-#                 "\nSTDERR:\n"
-#                 + result.stderr
-#             )
-
-#         output += (
-#             f"\nEXIT CODE: {result.returncode}"
-#         )
-
-#         if result.returncode == 0:
-#             output += "\nTEST STATUS: PASSED"
-#         else:
-#             output += "\nTEST STATUS: FAILED"
-
-#         return output
-
-#     except subprocess.TimeoutExpired:
-
-#         return (
-#             "ERROR: Test execution timed out."
-#         )
-
-#     except Exception as e:
-
-#         return (
-#             f"ERROR: {type(e).__name__}: {e}"
-#         )
 # ============================================================
 # SERVER STARTUP
 # ============================================================
