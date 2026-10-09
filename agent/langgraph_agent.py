@@ -20,6 +20,7 @@ class AgentState(TypedDict):
 
     plan: list[str]
     current_step: int
+    step_completed: bool
 
     test_passed: bool
     retry_count: int
@@ -304,22 +305,31 @@ def verify_node(state: AgentState):
 # ROUTER
 # ============================================================
 
+# def should_continue(state: AgentState):
+
+#     last_message = state["messages"][-1]
+
+#     if last_message.tool_calls:
+
+#         return "tools"
+#     # Do not allow the agent to finish before
+#     # the test suite has actually passed.
+#     # if not state["test_passed"]:
+#     #     print("\n⚠️ Agent attempted to finish before tests passed.")
+#     #     print("🧪 Forcing TEST NODE...")
+#     #     return "test"
+
+#     return "verify"
+
 def should_continue(state: AgentState):
 
-    last_message = state["messages"][-1]
+    messages = state["messages"]
+    last_message = messages[-1]
 
-    if last_message.tool_calls:
-
+    if getattr(last_message, "tool_calls", None):
         return "tools"
-    # Do not allow the agent to finish before
-    # the test suite has actually passed.
-    # if not state["test_passed"]:
-    #     print("\n⚠️ Agent attempted to finish before tests passed.")
-    #     print("🧪 Forcing TEST NODE...")
-    #     return "test"
 
     return "verify"
-
 def test_router(state: AgentState):
 
     if state["test_passed"]:
@@ -352,6 +362,17 @@ def verify_router(state: AgentState):
 
     return "test"
 
+
+
+def advance_router(state: AgentState):
+
+    plan = state.get("plan", [])
+    current_step = state.get("current_step", 0)
+
+    if current_step >= len(plan) - 1:
+        return "final"
+
+    return "agent"
 # async def test_node(state: AgentState):
 
 #     print("\n" + "=" * 60)
@@ -574,7 +595,20 @@ def after_tools(state: AgentState):
 
 def build_graph(tools):
 
-    llm_with_tools = llm.bind_tools(tools)
+    # llm_with_tools = llm.bind_tools(tools)
+    agent_tool_names = {
+    "list_files",
+    "read_file",
+    "write_file",
+    "run_python",
+}
+
+    agent_tools = [
+        t for t in tools
+        if t.name in agent_tool_names
+    ]
+
+    llm_with_tools = llm.bind_tools(agent_tools)
 
     tool_map = {
         tool.name: tool
@@ -592,27 +626,37 @@ def build_graph(tools):
         print("=" * 60, flush=True)
 
         planning_prompt = HumanMessage(
-            content="""
-    Analyze the user's software engineering task and create a
-    clear execution plan.
+    content="""
+Analyze the user's software engineering task and create a
+HIGH-LEVEL execution plan.
 
-    Break the task into concrete engineering steps.
+Create between 5 and 8 steps maximum.
 
-    The plan should include:
-    1. Repository inspection
-    2. Source/test analysis
-    3. Required implementation changes
-    4. Testing
-    5. Failure correction if tests fail
-    6. Git diff review
-    7. Git status review
-    8. Final reporting
+Each step must represent a meaningful engineering phase,
+not an individual tool call.
 
-    Do NOT perform any actions.
-    Do NOT call tools.
-    Return only a numbered execution plan.
-    """
-        )
+For example:
+
+1. Inspect the repository and understand the relevant files.
+2. Analyze the source code and existing tests.
+3. Implement the required changes.
+4. Run the test suite.
+5. Analyze and fix any test failures.
+6. Review the Git diff and verify the changes.
+7. Check Git status and prepare the final report.
+
+Important:
+- Do NOT create a separate step for every file.
+- Do NOT create a separate step for every tool call.
+- Do NOT create overly detailed substeps.
+- Multiple tool calls may be required to complete one plan step.
+- The executor will decide which tools to use.
+- Do NOT perform any actions.
+- Do NOT call tools.
+
+Return ONLY the numbered execution plan.
+"""
+)
 
         messages = [
             *state["messages"],
@@ -642,37 +686,119 @@ def build_graph(tools):
 
     async def dynamic_agent_node(state: AgentState):
 
-        print("\n" + "=" * 60)
-        print("🤖 AGENT NODE")
-        print("=" * 60)
+        print("\n" + "=" * 60, flush=True)
+        print("🤖 AGENT NODE", flush=True)
+        print("=" * 60, flush=True)
 
-        response = await llm_with_tools.ainvoke(
-            state["messages"]
+        plan = state.get("plan", [])
+        current_step = state.get("current_step", 0)
+
+        if plan and current_step < len(plan):
+            current_plan_step = plan[current_step]
+        else:
+            current_plan_step = "Continue the task using the available tools."
+        print(
+            f"\n📍 Current Plan Step: "
+            f"{current_step + 1}/{len(plan)}",
+            flush=True
         )
+
+        print(
+            f"   {current_plan_step}",
+            flush=True
+        )
+
+
+        plan_context = HumanMessage(
+            content=f"""
+You are executing a software engineering task.
+
+FULL PLAN:
+{chr(10).join(
+    f"{i + 1}. {step}"
+    for i, step in enumerate(plan)
+)}
+
+CURRENT STEP:
+Step {current_step + 1}: {current_plan_step}
+
+Rules:
+- Perform ONLY actions relevant to the current step.
+- Do not repeat successful tool calls without a clear reason.
+- Never create files or directories unless the task requires them.
+- Do not use list_files to investigate files already identified.
+- If the current step requires testing, call run_tests directly.
+- If the current step requires Git review, do not modify source files.
+- Use filesystem paths relative to the workspace root.
+- After obtaining the necessary results, stop requesting tools
+  and provide a concise summary of the step.
+"""
+
+        )
+
+        messages = [
+            *state["messages"],
+            plan_context
+        ]
+
+        response = await llm_with_tools.ainvoke(messages)
 
         if response.tool_calls:
 
-            print("\nQwen requested:")
+            print("\nQwen requested:", flush=True)
 
             for call in response.tool_calls:
 
                 print(
-                    f"  🔧 {call['name']}"
+                    f"  🔧 {call['name']}",
+                    flush=True
                 )
 
                 print(
-                    f"     {call['args']}"
+                    f"     {call['args']}",
+                    flush=True
                 )
 
         else:
 
-            print("\nQwen produced final answer.")
+            print(
+                "\nQwen produced final answer.",
+                flush=True
+            )
 
         return {
-            "messages": [response]
-        }
+        "messages": [response]
+    }
+    async def advance_step_node(state: AgentState):
 
-    
+        current_step = state.get("current_step", 0)
+        plan = state.get("plan", [])
+
+        # Move to next step
+        if current_step < len(plan) - 1:
+            current_step += 1
+
+            print(
+                f"\n➡️ Advancing to plan step "
+                f"{current_step + 1}/{len(plan)}",
+                flush=True
+            )
+
+            return {
+                "current_step": current_step,
+                "step_completed": False
+            }
+
+        print(
+            "\n🏁 All plan steps completed.",
+            flush=True
+        )
+
+        return {
+            "current_step": current_step,
+            "step_completed": True
+        }
+        
 
     async def dynamic_tool_node(state: AgentState):
 
@@ -805,6 +931,7 @@ def build_graph(tools):
         return {
             "messages": results
         }
+    
     async def final_agent_node(state: AgentState):
 
         print("\n" + "=" * 60, flush=True)
@@ -890,7 +1017,10 @@ Return only the final human-readable report.
         "final",
         final_agent_node
     )
-    
+    graph.add_node(
+        "advance_step", 
+        advance_step_node
+    )
 
     graph.add_edge(
         START,
@@ -902,14 +1032,22 @@ Return only the final human-readable report.
     )
 
     graph.add_conditional_edges(
-        "agent",
-        should_continue,
-        {
-            "tools": "tools",
-            "verify": "verify",
-        }
-    )
-
+    "agent",
+    should_continue,
+    {
+        "tools": "tools",
+        "verify": "verify",
+       
+    }
+)
+    graph.add_conditional_edges(
+    "advance_step",
+    advance_router,
+    {
+        "agent": "agent",
+        "final": "final",
+    }
+)   
     graph.add_conditional_edges(
     "tools",
     after_tools,
@@ -934,10 +1072,21 @@ Return only the final human-readable report.
         {
             "test": "test",
             "fix": "agent",
-            "success": END,
+            "success": "review",
         }
     )
-    graph.add_edge("review", "final")
+#     graph.add_conditional_edges(
+#     "review",
+#     review_router,
+#     {
+#         "advance_step": "advance_step",
+#         "final": "final",
+#     }
+# )
+    graph.add_edge(
+    "review",
+    "advance_step"
+)
     graph.add_edge("final", END)
     return graph.compile()
 
@@ -1147,6 +1296,7 @@ IMPORTANT RULES
         ],
         "plan": [],
         "current_step": 0,
+        "step_completed": False,
 
         "test_passed": False,
         "retry_count": 0,
@@ -1155,6 +1305,7 @@ IMPORTANT RULES
     }
 
     print("\nStarting LangGraph agent...")
+    
 
     final_state = await graph.ainvoke(
         initial_state
