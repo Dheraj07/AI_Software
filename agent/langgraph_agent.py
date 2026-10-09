@@ -21,7 +21,7 @@ class AgentState(TypedDict):
     plan: list[str]
     current_step: int
     step_completed: bool
-
+    ran_tests: bool
     test_passed: bool
     retry_count: int
     max_retries: int
@@ -495,29 +495,33 @@ async def test_node(state: AgentState):
 
     retry_count = state["retry_count"]
 
-    if not test_passed:
-        retry_count += 1
+    
+    if test_passed:
+        result_message = (
+            f"TESTS PASSED.\n\n"
+            f"Test execution output:\n{result}\n\n"
+            "Continue to the review stage. "
+            "Do not modify code unless another issue is identified."
+        )
+    else:
+        result_message = (
+            f"TESTS FAILED.\n\n"
+            f"Test execution output:\n{result}\n\n"
+            "Analyze the failure carefully. Inspect the relevant "
+            "source code and tests, fix the implementation, read "
+            "the modified file again, and rerun the tests."
+        )
 
     return {
         "messages": [
-            HumanMessage(
-                content=f"""
-    TEST EXECUTION RESULT:
-
-    {result}
-
-    The tests have failed.
-
-    Analyze the failure carefully.
-    Inspect the relevant source code and tests.
-    Fix the implementation causing the failure.
-    Then run the tests again.
-    """
-            )
+            HumanMessage(content=result_message)
         ],
         "test_passed": test_passed,
-        "retry_count": retry_count
+        "test_output": str(result),
+        "ran_tests": True,
+        "retry_count": retry_count,
     }
+
 
 
 # async def review_node(state: AgentState):
@@ -1297,7 +1301,7 @@ IMPORTANT RULES
         "plan": [],
         "current_step": 0,
         "step_completed": False,
-
+        "test_output": "",
         "test_passed": False,
         "retry_count": 0,
         "max_retries": 3,
