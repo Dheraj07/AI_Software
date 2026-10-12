@@ -1,5 +1,5 @@
 import asyncio
-
+import ast
 from langchain_ollama import ChatOllama
 from langchain_core.tools import tool
 from langchain_core.messages import ToolMessage, HumanMessage
@@ -8,8 +8,10 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from typing import Annotated, TypedDict
 from langchain_core.tools import StructuredTool
+from yaml import warnings
 from mcp_client import MCPClient
-
+from langgraph.types import interrupt, Command
+from langgraph.checkpoint.memory import MemorySaver
 
 # ============================================================
 # STATE
@@ -26,7 +28,18 @@ class AgentState(TypedDict):
     retry_count: int
     max_retries: int
     ran_tests: bool
-
+    test_output: str
+    baseline_git_status: str
+    scope_report: str
+    scope_warnings: list[str]
+    baseline_git_diff: str
+    commit_requested: bool
+    human_approved: bool
+    approved_files: list[str]
+    commit_message: str
+    commit_result: str
+    final_git_status: str
+    baseline_git_cached_diff: str
 
 # ============================================================
 # MCP + TOOLS
@@ -370,7 +383,7 @@ def advance_router(state: AgentState):
     current_step = state.get("current_step", 0)
 
     if current_step >= len(plan) - 1:
-        return "final"
+        return "validate_scope"
 
     return "agent"
 # async def test_node(state: AgentState):
@@ -625,6 +638,53 @@ def build_graph(tools):
 
     async def planner_node(state: AgentState):
 
+        git_diff_tool = tool_map.get("git_diff")
+        git_diff_cached_tool = tool_map.get("git_diff_cached")
+        git_status_tool = tool_map.get("git_status")
+
+        baseline_diff = "BASELINE_DIFF_UNAVAILABLE"
+        baseline_cached_diff = "BASELINE_CACHED_DIFF_UNAVAILABLE"
+        baseline_status = "BASELINE_STATUS_UNAVAILABLE"
+
+        if git_diff_tool is not None:
+            try:
+                raw = await git_diff_tool.ainvoke({})
+                baseline_diff = unwrap_git_result(raw)
+            except Exception as exc:
+                baseline_diff = f"BASELINE_DIFF_ERROR: {exc}"
+
+        if git_diff_cached_tool is not None:
+            try:
+                raw = await git_diff_cached_tool.ainvoke({})
+                baseline_cached_diff = unwrap_git_result(raw)
+            except Exception as exc:
+                baseline_cached_diff = (
+                    f"BASELINE_CACHED_DIFF_ERROR: {exc}"
+                )
+
+        if git_status_tool is not None:
+            try:
+                raw = await git_status_tool.ainvoke({})
+                baseline_status = unwrap_git_result(raw)
+            except Exception as exc:
+                baseline_status = f"BASELINE_CAPTURE_ERROR: {exc}"
+
+        print(
+            "BASELINE STATUS:",
+            repr(baseline_status[:1000]),
+            flush=True,
+        )
+        print(
+            "BASELINE DIFF:",
+            repr(baseline_diff[:1000]),
+            flush=True,
+        )
+        print(
+            "BASELINE CACHED DIFF:",
+            repr(baseline_cached_diff[:1000]),
+            flush=True,
+        )
+
         print("\n" + "=" * 60, flush=True)
         print("🧠 PLANNER NODE", flush=True)
         print("=" * 60, flush=True)
@@ -685,7 +745,10 @@ Return ONLY the numbered execution plan.
         return {
             "messages": [response],
             "plan": plan,
-            "current_step": 0
+            "current_step": 0,
+            "baseline_git_status": baseline_status,
+            "baseline_git_diff": baseline_diff,
+            "baseline_git_cached_diff": baseline_cached_diff,
         }
 
     async def dynamic_agent_node(state: AgentState):
@@ -936,60 +999,729 @@ Rules:
             "messages": results
         }
     
-    async def final_agent_node(state: AgentState):
+    
+    def parse_git_status(raw_status: str) -> dict:
+        """Parse git status --short --branch output."""
 
-        print("\n" + "=" * 60, flush=True)
-        print("🧠 FINAL AGENT NODE", flush=True)
-        print("=" * 60, flush=True)
+        import ast
 
-        final_instruction = HumanMessage(
-            content="""
-You are now in the final reporting stage.
+        # MCP may return a dictionary represented as a string.
+        try:
+            parsed = ast.literal_eval(raw_status)
+            if isinstance(parsed, dict):
+                raw_status = str(parsed.get("result", raw_status))
+        except (ValueError, SyntaxError):
+            pass
 
-The software engineering task has completed its execution and review stages.
+        branch = "Unknown"
+        modified_files = []
+        untracked_files = []
+        staged_files = []
+        unstaged_files = []
 
-Using the complete conversation history, especially:
-- the original user task
-- files inspected
-- changes made
-- test results
-- Git diff
-- Git status
+        for line in raw_status.splitlines():
+            line = line.rstrip()
 
-produce a concise final software-engineering report.
+            if not line:
+                continue
 
-Your report MUST include:
+            if line.startswith("## "):
+                branch = line[3:].strip()
+                continue
 
-1. Task status
-2. What was changed
-3. Test results
-4. Git branch
-5. Modified files
-6. Untracked files
-7. Whether the working tree is clean
-8. Confirm that no Git commit was created
+            if line.startswith("EXIT CODE:"):
+                continue
 
-Do not perform any more tool calls.
-Do not modify any files.
-Do not invent information that is not present in the conversation.
+            if line.startswith("TEST STATUS:"):
+                continue
 
-Return only the final human-readable report.
-"""
-        )
+            if len(line) < 3:
+                continue
 
-        messages = [
-            *state["messages"],
-            final_instruction
-        ]
+            status = line[:2]
+            filepath = line[3:].strip()
 
-        response = await llm.ainvoke(messages)
+            if not filepath:
+                continue
 
-        print("\n📝 Final report generated.", flush=True)
+            if status == "??":
+                untracked_files.append(filepath)
+                continue
+
+            modified_files.append(filepath)
+
+            if status[0] != " ":
+                staged_files.append(filepath)
+
+            if status[1] != " ":
+                unstaged_files.append(filepath)
 
         return {
-            "messages": [response]
+            "branch": branch,
+            "modified_files": modified_files,
+            "untracked_files": untracked_files,
+            "staged_files": staged_files,
+            "unstaged_files": unstaged_files,
+            "working_tree_clean": (
+                not modified_files and not untracked_files
+            ),
         }
 
+    
+    async def final_agent_node(state: AgentState):
+        print("\n" + "=" * 60, flush=True)
+        print("🧠 FINAL REPORT NODE", flush=True)
+        print("=" * 60, flush=True)
+
+        # Obtain the latest Git status.
+        git_status_tool = tool_map.get("git_status")
+
+        if git_status_tool is not None:
+            try:
+                git_status = str(
+                    await git_status_tool.ainvoke({})
+                )
+            except Exception as e:
+                git_status = f"Unable to retrieve Git status: {e}"
+        else:
+            git_status = "Git status tool unavailable"
+
+        git_info = parse_git_status(git_status)
+
+        # Read the verified test state.
+        test_passed = state.get("test_passed", False)
+        test_output = state.get("test_output", "")
+        ran_tests = state.get("ran_tests", False)
+
+        if not test_output:
+            for message in reversed(state.get("messages", [])):
+                content = getattr(message, "content", "")
+
+                if (
+                    isinstance(content, str)
+                    and "TEST EXECUTION RESULT:" in content
+                ):
+                    test_output = content
+                    break
+
+        if ran_tests and test_passed:
+            test_summary = "PASSED"
+        elif ran_tests:
+            test_summary = "FAILED"
+        else:
+            test_summary = "NOT VERIFIED"
+
+        # Read scope validation BEFORE constructing the report.
+        scope_report = state.get(
+            "scope_report",
+            "Scope validation was not run.",
+        )
+
+        scope_warnings = state.get("scope_warnings", [])
+
+        if scope_warnings:
+            warnings_text = "\n".join(
+                f"- {warning}" for warning in scope_warnings
+            )
+        else:
+            warnings_text = "- None reported"
+
+        modified_files = "\n".join(
+            "- " + f for f in git_info["modified_files"]
+        ) or "- None"
+
+        untracked_files = "\n".join(
+            "- " + f for f in git_info["untracked_files"]
+        ) or "- None"
+
+        staged_files = "\n".join(
+            "- " + f for f in git_info["staged_files"]
+        ) or "- None"
+
+        unstaged_files = "\n".join(
+            "- " + f for f in git_info["unstaged_files"]
+        ) or "- None"
+        scope_report = state.get(
+    "scope_report",
+    "Scope validation was not run.",
+)
+
+        # scope_warnings = state.get("scope_warnings", [])
+
+        # Determine the final status using tests AND scope validation.
+        if not ran_tests or not test_passed:
+            task_status = "Needs attention"
+        elif (
+            "INCOMPLETE" in scope_report.upper()
+            or "NOT RUN" in scope_report.upper()
+            or "UNAVAILABLE" in scope_report.upper()
+            or scope_warnings
+        ):
+            task_status = "Completed with warnings"
+        else:
+            task_status = "Completed"
+
+        report = f"""
+    ## Final Software-Engineering Report
+
+    1. **Task Status:** {task_status}
+
+    2. **Test Results:** {test_summary}
+
+    3. **Test Output:**
+    {test_output or "No test output recorded."}
+
+    4. **Change-Scope Validation:**
+    {scope_report}
+
+    5. **Scope Warnings:**
+    {warnings_text}
+
+    6. **Git Branch:** {git_info["branch"]}
+
+    7. **Modified Files:**
+    {modified_files}
+
+    8. **Untracked Files:**
+    {untracked_files}
+
+    9. **Staged Files:**
+    {staged_files}
+
+    10. **Unstaged Files:**
+    {unstaged_files}
+
+    11. **Working Tree Clean:** {
+        "Yes" if git_info["working_tree_clean"] else "No"
+    }
+
+    12. **Git Commit:** Not performed by the reporting node.
+    """
+
+        print(report, flush=True)
+
+        return {
+            "messages": [
+                HumanMessage(content=report)
+            ]
+        }
+
+
+        
+    
+    async def validate_scope_node(state: AgentState):
+        git_status_tool = tool_map.get("git_status")
+        git_diff_tool = tool_map.get("git_diff")
+        git_diff_cached_tool = tool_map.get("git_diff_cached")
+
+        warnings = []
+
+        def unwrap_result(raw):
+            """Extract the result string from an MCP tool response."""
+            if isinstance(raw, dict):
+                if "result" in raw:
+                    return str(raw["result"])
+                return str(raw)
+
+            text = str(raw)
+
+            try:
+                parsed = ast.literal_eval(text)
+                if isinstance(parsed, dict) and "result" in parsed:
+                    return str(parsed["result"])
+            except (ValueError, SyntaxError):
+                pass
+
+            return text
+
+        def parse_status_paths(raw_status):
+            """Parse git status --short --branch output."""
+            paths = {}
+
+            for line in unwrap_result(raw_status).splitlines():
+                if line.startswith("##") or len(line) < 3:
+                    continue
+
+                status = line[:2]
+                path = line[3:].strip()
+
+                if not path:
+                    continue
+
+                if status == "??":
+                    paths[path] = {
+                        "staged": False,
+                        "unstaged": False,
+                        "untracked": True,
+                    }
+                    continue
+
+                if all(char in " MADRCU?!" for char in status):
+                    paths[path] = {
+                        "staged": status[0] not in (" ", "?"),
+                        "unstaged": status[1] not in (" ", "?"),
+                        "untracked": False,
+                    }
+
+            return paths
+
+        def parse_diff_by_file(raw_diff):
+            """Map Git diff sections to paths."""
+            diff_text = unwrap_result(raw_diff)
+            sections = {}
+            current_path = None
+            current_lines = []
+
+            def save_section():
+                if current_path is not None:
+                    sections[current_path] = "\n".join(current_lines)
+
+            for line in diff_text.splitlines():
+                if line.startswith("diff --git "):
+                    save_section()
+                    current_lines = [line]
+                    current_path = None
+
+                    header = line[len("diff --git "):]
+                    if " b/" in header:
+                        current_path = header.split(" b/", 1)[1]
+                elif current_lines:
+                    current_lines.append(line)
+
+            save_section()
+            return sections
+
+        # --------------------------------------------------------
+        # 1. Validate the baseline captured by planner_node
+        # --------------------------------------------------------
+
+        baseline_status = unwrap_result(
+            state.get("baseline_git_status", "")
+        )
+        baseline_diff = unwrap_result(
+            state.get("baseline_git_diff", "")
+        )
+        baseline_cached_diff = unwrap_result(
+            state.get("baseline_git_cached_diff", "")
+        )
+
+        if (
+            not baseline_status
+            or "BASELINE_CAPTURE_ERROR:" in baseline_status
+            or baseline_status == "BASELINE_STATUS_UNAVAILABLE"
+        ):
+            warnings.append(
+                "Initial Git status is unavailable or unreliable."
+            )
+
+        if (
+            not baseline_diff
+            or "BASELINE_DIFF_ERROR:" in baseline_diff
+            or baseline_diff == "BASELINE_DIFF_UNAVAILABLE"
+        ):
+            warnings.append(
+                "Initial unstaged diff is unavailable or unreliable."
+            )
+
+        if (
+            not baseline_cached_diff
+            or "BASELINE_CACHED_DIFF_ERROR:" in baseline_cached_diff
+            or baseline_cached_diff == "BASELINE_CACHED_DIFF_UNAVAILABLE"
+        ):
+            warnings.append(
+                "Initial staged diff is unavailable or unreliable."
+            )
+
+        if git_status_tool is None:
+            warnings.append("git_status tool is unavailable.")
+
+        if git_diff_tool is None:
+            warnings.append("git_diff tool is unavailable.")
+
+        if git_diff_cached_tool is None:
+            warnings.append("git_diff_cached tool is unavailable.")
+
+        if warnings:
+            return {
+                "scope_report": (
+                    "CHANGE-SCOPE VALIDATION: INCOMPLETE\n"
+                    + "\n".join(f"- {warning}" for warning in warnings)
+                ),
+                "scope_warnings": warnings,
+            }
+
+        # --------------------------------------------------------
+        # 2. Capture final Git state
+        # --------------------------------------------------------
+
+        try:
+            current_status = unwrap_result(
+                await git_status_tool.ainvoke({})
+            )
+            current_diff = unwrap_result(
+                await git_diff_tool.ainvoke({})
+            )
+            current_cached_diff = unwrap_result(
+                await git_diff_cached_tool.ainvoke({})
+            )
+        except Exception as exc:
+            return {
+                "scope_report": (
+                    "CHANGE-SCOPE VALIDATION: INCOMPLETE\n"
+                    f"Could not retrieve final Git data: {exc}"
+                ),
+                "scope_warnings": [
+                    "Final Git data could not be retrieved."
+                ],
+            }
+
+        # Detect error responses from Git MCP, which may return errors
+        # as strings instead of raising exceptions.
+        for label, output in (
+            ("final Git status", current_status),
+            ("final unstaged diff", current_diff),
+            ("final staged diff", current_cached_diff),
+        ):
+            if "EXIT CODE:" in output and not output.strip().endswith(
+                "EXIT CODE: 0"
+            ):
+                warnings.append(f"Git command failed: {label}.")
+
+        if warnings:
+            return {
+                "scope_report": (
+                    "CHANGE-SCOPE VALIDATION: INCOMPLETE\n"
+                    + "\n".join(f"- {warning}" for warning in warnings)
+                ),
+                "scope_warnings": warnings,
+            }
+
+        # --------------------------------------------------------
+        # 3. Compare baseline and final snapshots
+        # --------------------------------------------------------
+
+        baseline_paths = parse_status_paths(baseline_status)
+        current_paths = parse_status_paths(current_status)
+
+        baseline_diffs = parse_diff_by_file(baseline_diff)
+        current_diffs = parse_diff_by_file(current_diff)
+
+        baseline_cached_diffs = parse_diff_by_file(
+            baseline_cached_diff
+        )
+        current_cached_diffs = parse_diff_by_file(
+            current_cached_diff
+        )
+
+        newly_present = sorted(
+            set(current_paths) - set(baseline_paths)
+        )
+        no_longer_present = sorted(
+            set(baseline_paths) - set(current_paths)
+        )
+
+        changed_diff_paths = sorted(
+            path
+            for path in set(baseline_diffs) | set(current_diffs)
+            if baseline_diffs.get(path) != current_diffs.get(path)
+        )
+
+        changed_staged_paths = sorted(
+            path
+            for path in (
+                set(baseline_cached_diffs)
+                | set(current_cached_diffs)
+            )
+            if (
+                baseline_cached_diffs.get(path)
+                != current_cached_diffs.get(path)
+            )
+        )
+
+        staged_paths = sorted(
+            path
+            for path, details in current_paths.items()
+            if details["staged"]
+        )
+
+        untracked_paths = sorted(
+            path
+            for path, details in current_paths.items()
+            if details["untracked"]
+        )
+
+        # --------------------------------------------------------
+        # 4. Generate validation report
+        # --------------------------------------------------------
+
+        report_lines = [
+            "CHANGE-SCOPE VALIDATION",
+            "Validation status: COMPARISON COMPLETE — REVIEW REQUIRED",
+            "Comparison: initial versus final Git status, "
+            "unstaged diff, and staged diff",
+            f"Initial status paths: {len(baseline_paths)}",
+            f"Final status paths: {len(current_paths)}",
+            "",
+            "Newly present paths:",
+        ]
+
+        report_lines.extend(
+            f"- {path}" for path in newly_present
+        ) if newly_present else report_lines.append("- None")
+
+        report_lines.append("")
+        report_lines.append("Paths no longer present in Git status:")
+        report_lines.extend(
+            f"- {path}" for path in no_longer_present
+        ) if no_longer_present else report_lines.append("- None")
+
+        report_lines.append("")
+        report_lines.append("Files with changed unstaged diff content:")
+        report_lines.extend(
+            f"- {path}" for path in changed_diff_paths
+        ) if changed_diff_paths else report_lines.append("- None detected")
+
+        report_lines.append("")
+        report_lines.append("Files with changed staged diff content:")
+        report_lines.extend(
+            f"- {path}" for path in changed_staged_paths
+        ) if changed_staged_paths else report_lines.append("- None detected")
+
+        report_lines.append("")
+        report_lines.append("Currently staged paths:")
+        report_lines.extend(
+            f"- {path}" for path in staged_paths
+        ) if staged_paths else report_lines.append("- None")
+
+        report_lines.append("")
+        report_lines.append("Currently untracked paths:")
+        report_lines.extend(
+            f"- {path}" for path in untracked_paths
+        ) if untracked_paths else report_lines.append("- None")
+
+        report_lines.extend([
+            "",
+            "Git snapshot comparison completed.",
+            "Task relevance and pre-existing versus agent-introduced "
+            "changes still require review.",
+        ])
+
+        return {
+            "scope_report": "\n".join(report_lines),
+            "scope_warnings": [],
+        }
+
+    def unwrap_git_result(raw):
+        if isinstance(raw, dict):
+            if "result" in raw:
+                return str(raw["result"])
+            return str(raw)
+
+        text = str(raw)
+
+        try:
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, dict) and "result" in parsed:
+                return str(parsed["result"])
+        except (ValueError, SyntaxError):
+            pass
+
+        return text
+
+
+    def git_command_succeeded(result):
+        return (
+            unwrap_git_result(result).strip().endswith("EXIT CODE: 0")
+        )
+
+
+    def get_diff_paths(diff_text):
+        paths = set()
+
+        for line in unwrap_git_result(diff_text).splitlines():
+            if not line.startswith("diff --git "):
+                continue
+
+            header = line[len("diff --git "):]
+
+            if " b/" in header:
+                paths.add(header.split(" b/", 1)[1])
+
+        return paths
+    async def approval_node(state: AgentState):
+        status_tool = tool_map.get("git_status")
+        diff_tool = tool_map.get("git_diff")
+
+        if status_tool is None or diff_tool is None:
+            return {
+                "human_approved": False,
+                "commit_result": "Blocked: Git review tools unavailable."
+            }
+
+        status = unwrap_git_result(
+            await status_tool.ainvoke({})
+        )
+
+        git_info = parse_git_status(status)
+
+        # Fail closed if unrelated or untracked changes exist.
+        if git_info["staged_files"] or git_info["untracked_files"]:
+            return {
+                "human_approved": False,
+                "commit_result": (
+                    "Blocked: staged or untracked files require "
+                    "manual review before committing."
+                )
+            }
+
+        files = sorted(git_info["modified_files"])
+
+        diff = unwrap_git_result(
+            await diff_tool.ainvoke({})
+        )
+
+        diff_paths = get_diff_paths(diff)
+
+        if not files or not diff_paths or set(files) != diff_paths:
+            return {
+                "human_approved": False,
+                "commit_result": (
+                    "Blocked: Git status and diff do not agree "
+                    "on the files to commit."
+                )
+            }
+
+        # Pause LangGraph and wait for a human decision.
+        decision = interrupt({
+            "type": "commit_approval",
+            "files": files,
+            "diff": diff,
+            "message": (
+                "Review these changes. Approve the commit only "
+                "if the files and diff are correct."
+            )
+        })
+
+        if not isinstance(decision, dict) or not decision.get("approved"):
+            return {
+                "human_approved": False,
+                "approved_files": [],
+                "commit_result": "Commit rejected by user."
+            }
+
+        message = str(decision.get("message", "")).strip()
+
+        if not message:
+            return {
+                "human_approved": False,
+                "approved_files": [],
+                "commit_result": "Commit blocked: message is required."
+            }
+
+        return {
+            "human_approved": True,
+            "approved_files": files,
+            "commit_message": message,
+            "commit_result": "Approved; awaiting commit verification."
+        }
+    async def commit_node(state: AgentState):
+        if not state.get("human_approved"):
+            return {
+                "commit_result": "Blocked: explicit approval missing."
+            }
+
+        add_tool = tool_map.get("git_add")
+        cached_diff_tool = tool_map.get("git_diff_cached")
+        commit_tool = tool_map.get("git_commit")
+        status_tool = tool_map.get("git_status")
+
+        if not all([
+            add_tool,
+            cached_diff_tool,
+            commit_tool,
+            status_tool
+        ]):
+            return {
+                "commit_result": "Blocked: required Git tools unavailable."
+            }
+
+        files = state.get("approved_files", [])
+
+        if not files:
+            return {
+                "commit_result": "Blocked: no approved files."
+            }
+
+        # Stage only the approved paths.
+        add_result = await add_tool.ainvoke({"files": files})
+
+        if not git_command_succeeded(add_result):
+            return {
+                "commit_result": (
+                    f"Staging failed: {unwrap_git_result(add_result)}"
+                )
+            }
+
+        # Verify exactly which files are staged.
+        cached_diff = await cached_diff_tool.ainvoke({})
+        staged_paths = get_diff_paths(cached_diff)
+
+        if staged_paths != set(files):
+            return {
+                "commit_result": (
+                    "Blocked: staged files do not match the approved "
+                    f"file list. Staged: {sorted(staged_paths)}. "
+                    f"Approved: {sorted(files)}. Review the Git index."
+                )
+            }
+
+        # Commit only after staged-diff verification.
+        commit_output = await commit_tool.ainvoke({
+            "message": state["commit_message"]
+        })
+
+        if not git_command_succeeded(commit_output):
+            return {
+                "commit_result": (
+                    f"Commit failed: {unwrap_git_result(commit_output)}"
+                )
+            }
+
+        final_status = unwrap_git_result(
+            await status_tool.ainvoke({})
+        )
+
+        return {
+            "commit_result": unwrap_git_result(commit_output),
+            "final_git_status": final_status
+        }
+    def route_after_scope(state: AgentState):
+        if not state.get("commit_requested", False):
+            return "final"
+
+        if not state.get("ran_tests") or not state.get("test_passed"):
+            return "final"
+
+        if state.get("scope_warnings"):
+            return "final"
+
+        scope_report = state.get("scope_report", "")
+
+        if "INCOMPLETE" in scope_report:
+            return "final"
+
+        # Block commits when the repository already had changes
+        # before this agent run began.
+        baseline = parse_git_status(
+            state.get("baseline_git_status", "")
+        )
+
+        if not baseline["working_tree_clean"]:
+            return "final"
+
+        return "approval"
+
+    
     graph.add_node(
             "planner",
             planner_node
@@ -1026,6 +1758,10 @@ Return only the final human-readable report.
         advance_step_node
     )
 
+    graph.add_node("validate_scope", validate_scope_node)
+    graph.add_node("approval", approval_node)
+    graph.add_node("commit", commit_node)
+    
     graph.add_edge(
         START,
         "planner"
@@ -1049,9 +1785,36 @@ Return only the final human-readable report.
     advance_router,
     {
         "agent": "agent",
-        "final": "final",
+        "validate_scope": "validate_scope",
     }
-)   
+) 
+    # graph.add_edge("validate_scope", "final")  
+    graph.add_conditional_edges(
+    "validate_scope",
+    route_after_scope,
+    {
+        "final": "final",
+        "approval": "approval",
+    }
+)
+
+    def route_after_approval(state: AgentState):
+        if state.get("human_approved"):
+            return "commit"
+        return "final"
+
+
+    graph.add_conditional_edges(
+        "approval",
+        route_after_approval,
+        {
+            "commit": "commit",
+            "final": "final",
+        }
+    )
+
+    graph.add_edge("commit", "final")
+
     graph.add_conditional_edges(
     "tools",
     after_tools,
@@ -1092,7 +1855,7 @@ Return only the final human-readable report.
     "advance_step"
 )
     graph.add_edge("final", END)
-    return graph.compile()
+    return graph.compile(checkpointer=MemorySaver())
 
 
 
@@ -1305,15 +2068,64 @@ IMPORTANT RULES
         "test_passed": False,
         "retry_count": 0,
         "max_retries": 3,
-        "ran_tests": False
+        "ran_tests": False,
+        "commit_requested": False,
+        "human_approved": False,
+        "approved_files": [],
+        "commit_message": "",
+        "commit_result": "Commit not requested",
+        "final_git_status": "",
     }
 
     print("\nStarting LangGraph agent...")
     
 
-    final_state = await graph.ainvoke(
-        initial_state
+    config = {
+    "configurable": {
+        "thread_id": "ph-agent-commit-session"
+    }
+}
+
+    result = await graph.ainvoke(
+        initial_state,
+        config=config
     )
+
+    while result.get("__interrupt__"):
+        for pending in result["__interrupt__"]:
+            payload = pending.value
+
+            print("\n" + "=" * 60)
+            print("HUMAN COMMIT APPROVAL REQUIRED")
+            print("=" * 60)
+
+            print("\nFiles:")
+            for path in payload.get("files", []):
+                print(f"  - {path}")
+
+            print("\nProposed Git diff:")
+            print(payload.get("diff", ""))
+
+        answer = input(
+            "\nApprove this commit? Type yes or no: "
+        ).strip().lower()
+
+        if answer == "yes":
+            message = input("Commit message: ").strip()
+
+            resume_value = {
+                "approved": True,
+                "message": message
+            }
+        else:
+            resume_value = {"approved": False}
+
+        result = await graph.ainvoke(
+            Command(resume=resume_value),
+            config=config
+        )
+
+    final_state = result
 
     print("\n" + "=" * 60)
     print("✅ FINAL RESULT")

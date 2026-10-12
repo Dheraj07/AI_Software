@@ -93,6 +93,27 @@ async def git_diff() -> str:
 
 
 # ============================================================
+# STAGED GIT DIFF
+# ============================================================
+
+@server.tool()
+async def git_diff_cached() -> str:
+    """
+    Show staged changes that would be included in a commit.
+    """
+
+    print(
+        "🔍 GIT DIFF CACHED",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    return run_git_command(
+        "diff",
+        "--cached",
+    )
+
+# ============================================================
 # GIT LOG
 # ============================================================
 
